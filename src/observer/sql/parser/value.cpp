@@ -12,11 +12,12 @@ See the Mulan PSL v2 for more details. */
 // Created by WangYunlai on 2023/06/28.
 //
 
+#include <sstream>
 #include "sql/parser/value.h"
+#include "storage/field/field.h"
+#include "common/log/log.h"
 #include "common/lang/comparator.h"
 #include "common/lang/string.h"
-#include "common/log/log.h"
-#include <sstream>
 
 const char *ATTR_TYPE_NAME[] = {"undefined", "chars", "ints", "floats", "booleans"};
 
@@ -37,13 +38,32 @@ AttrType attr_type_from_string(const char *s)
   return UNDEFINED;
 }
 
-Value::Value(int val) { set_int(val); }
+Value::Value(int val)
+{
+  set_int(val);
+}
 
-Value::Value(float val) { set_float(val); }
+Value::Value(float val)
+{
+  set_float(val);
+}
 
-Value::Value(bool val) { set_boolean(val); }
+Value::Value(bool val)
+{
+  set_boolean(val);
+}
 
-Value::Value(const char *s, int len /*= 0*/) { set_string(s, len); }
+Value::Value(const char *s, int len /*= 0*/)
+{
+  set_string(s, len);
+}
+
+Value::Value(const char *date, int len, int flag)
+{
+  int intDate = 0;
+  strDate_to_intDate_(date, intDate);
+  set_date(intDate);
+}
 
 void Value::set_data(char *data, int length)
 {
@@ -53,39 +73,50 @@ void Value::set_data(char *data, int length)
     } break;
     case INTS: {
       num_value_.int_value_ = *(int *)data;
-      length_               = length;
+      length_ = length;
     } break;
     case FLOATS: {
       num_value_.float_value_ = *(float *)data;
-      length_                 = length;
+      length_ = length;
     } break;
     case BOOLEANS: {
       num_value_.bool_value_ = *(int *)data != 0;
-      length_                = length;
+      length_ = length;
+    } break;
+    case DATES: {
+      num_value_.date_value_ = *(int *)data;
+      length_ = length;
     } break;
     default: {
       LOG_WARN("unknown data type: %d", attr_type_);
     } break;
   }
 }
+void Value::set_date(int val)
+{
+  attr_type_ = DATES;
+  num_value_.date_value_ = val;
+  length_ = sizeof(val);
+}
+
 void Value::set_int(int val)
 {
-  attr_type_            = INTS;
+  attr_type_ = INTS;
   num_value_.int_value_ = val;
-  length_               = sizeof(val);
+  length_ = sizeof(val);
 }
 
 void Value::set_float(float val)
 {
-  attr_type_              = FLOATS;
+  attr_type_ = FLOATS;
   num_value_.float_value_ = val;
-  length_                 = sizeof(val);
+  length_ = sizeof(val);
 }
 void Value::set_boolean(bool val)
 {
-  attr_type_             = BOOLEANS;
+  attr_type_ = BOOLEANS;
   num_value_.bool_value_ = val;
-  length_                = sizeof(val);
+  length_ = sizeof(val);
 }
 void Value::set_string(const char *s, int len /*= 0*/)
 {
@@ -148,12 +179,94 @@ std::string Value::to_string() const
     case CHARS: {
       os << str_value_;
     } break;
+    case DATES: {
+      std::string strDate = "";
+      intDate_to_strDate_(num_value_.date_value_, strDate);
+      os << strDate;
+      break;
+    }
     default: {
       LOG_WARN("unsupported attr type: %d", attr_type_);
     } break;
   }
   return os.str();
 }
+
+bool is_leap_year(int year)
+{
+  return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+void strDate_to_intDate_(const char* strDate, int& intDate)
+{
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  int ret =sscanf(strDate, "%d-%d-%d", &year, &month, &day);
+  if(ret != 3){
+    throw "FAILURE";
+    return;
+  }
+
+  // 对于可表示的时间范围，似乎没有要求
+  // 往年要求了日期大于1900且小于9999年。
+
+  if( (year <= 0) ||
+      (month <= 0 || month > 12) ||
+      (day <= 0 || day > 31)
+  ) {
+    throw "FAILURE";
+    return;
+  }
+  
+  int max_day_in_month[] = {0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if(!is_leap_year(year)) {
+    max_day_in_month[2] = 28;
+  }
+  if(day > max_day_in_month[month]) {
+    throw "FAILURE";
+    return;
+  }
+
+  intDate = year * 10000 + month * 100 + day;
+}
+
+void intDate_to_strDate_(const int intDate, std::string& strDate) {
+  int tmp = intDate;
+  int year = tmp / 10000;
+  tmp = tmp % 10000;
+  int month = tmp / 100;
+  int day = tmp % 100;
+
+  // year 补全4位，或许不需要
+  std::string str_year = std::to_string(year);
+  while(str_year.size() != 4) str_year = '0' + str_year;
+  
+  std::string str_month = std::to_string(month);
+  while(str_month.size() != 2) str_month = '0' + str_month;
+
+  std::string str_day = std::to_string(day);
+  while(str_day.size() != 2) str_day = '0' + str_day;
+
+  strDate = str_year + "-" + str_month + "-" + str_day;
+}
+
+std::string floatString_to_String(std::string floatString){
+  std::string ret = "";
+  int i = 0;
+  bool dot_flag = false;
+  while(floatString[i] >= '0' && floatString[i] <= '9'){
+    ret += floatString[i];
+    i++;
+    if (!dot_flag && floatString[i] == '.') {
+      i++;
+      ret += '.';
+      dot_flag = true;
+    }
+  }
+  return ret == "" ? floatString : ret;
+}
+
 
 int Value::compare(const Value &other) const
 {
@@ -173,7 +286,10 @@ int Value::compare(const Value &other) const
       } break;
       case BOOLEANS: {
         return common::compare_int((void *)&this->num_value_.bool_value_, (void *)&other.num_value_.bool_value_);
-      }
+      } break;
+      case DATES: {
+        return common::compare_date((void *)&this->num_value_.date_value_, (void *)&other.num_value_.date_value_);
+      } break;
       default: {
         LOG_WARN("unsupported type: %d", this->attr_type_);
       }
@@ -184,9 +300,35 @@ int Value::compare(const Value &other) const
   } else if (this->attr_type_ == FLOATS && other.attr_type_ == INTS) {
     float other_data = other.num_value_.int_value_;
     return common::compare_float((void *)&this->num_value_.float_value_, (void *)&other_data);
+  } else if (this->attr_type_ == INTS && other.attr_type_ == CHARS) {         //join_table的测试样例有 INTS 与 CHARS的比较
+    std::string this_data = std::to_string(this->num_value_.int_value_);
+    return common::compare_string((void *)(this_data.c_str()), this_data.length(), (void *)(other.str_value_.c_str()), other.str_value_.length());
+  } else if (this->attr_type_ == CHARS && other.attr_type_ == INTS) { 
+    std::string other_data = std::to_string(other.num_value_.int_value_);
+    return common::compare_string((void*)(this->str_value_.c_str()), this->str_value_.length(), (void*)(other_data.c_str()), other_data.length());
+  } else if (this->attr_type_ == FLOATS && other.attr_type_ == CHARS) {
+    std::string this_data = removeFloatStringEndZero(std::to_string(this->num_value_.float_value_));
+    std::string other_data = removeFloatStringEndZero(floatString_to_String(other.str_value_));
+    return common::compare_string((void *)(this_data.c_str()), this_data.length(), (void *)(other_data.c_str()), other_data.length());
+  } else if (this->attr_type_ == CHARS && other.attr_type_ == FLOATS) {
+    std::string other_data = removeFloatStringEndZero(std::to_string(other.num_value_.float_value_));
+    std::string this_data = removeFloatStringEndZero(floatString_to_String(this->str_value_));
+    return common::compare_string((void *)(this_data.c_str()), this_data.length(), (void *)(other_data.c_str()), other_data.length());
   }
   LOG_WARN("not supported");
   return -1;  // TODO return rc?
+}
+
+std::string removeFloatStringEndZero(std::string str){
+  std::string ret = "";
+  for(int i = str.size() - 1; i >= 0; i--)
+    if(str[i] == '0')
+      continue;
+    else
+      ret = str[i] + ret;
+  if(ret == "")
+    ret = "0";
+  return ret;
 }
 
 int Value::get_int() const
@@ -208,6 +350,35 @@ int Value::get_int() const
     }
     case BOOLEANS: {
       return (int)(num_value_.bool_value_);
+    }
+    case DATES: {
+      return (int)(num_value_.date_value_);
+    }
+    default: {
+      LOG_WARN("unknown data type. type=%d", attr_type_);
+      return 0;
+    }
+  }
+  return 0;
+}
+
+int Value::get_date() const
+{
+  switch (attr_type_) {
+    case CHARS: {
+      std::cout << "Value::get_date() ERROR" << std::endl;
+    }
+    case INTS: {
+      std::cout << "Value::get_date() ERROR" << std::endl;
+    }
+    case FLOATS: {
+      std::cout << "Value::get_date() ERROR" << std::endl;
+    }
+    case BOOLEANS: {
+      std::cout << "Value::get_date() ERROR" << std::endl;
+    }
+    case DATES: {
+      return num_value_.int_value_;
     }
     default: {
       LOG_WARN("unknown data type. type=%d", attr_type_);
@@ -237,6 +408,9 @@ float Value::get_float() const
     case BOOLEANS: {
       return float(num_value_.bool_value_);
     } break;
+    case DATES: {
+      std::cout << "failed to convert date to float.\n" << std::endl;
+    } break;
     default: {
       LOG_WARN("unknown data type. type=%d", attr_type_);
       return 0;
@@ -245,7 +419,10 @@ float Value::get_float() const
   return 0;
 }
 
-std::string Value::get_string() const { return this->to_string(); }
+std::string Value::get_string() const
+{
+  return this->to_string();
+}
 
 bool Value::get_boolean() const
 {
@@ -278,6 +455,9 @@ bool Value::get_boolean() const
     case BOOLEANS: {
       return num_value_.bool_value_;
     } break;
+    case DATES: {
+      std::cout << "failed to convert date to boolean.\n" << std::endl;
+    }
     default: {
       LOG_WARN("unknown data type. type=%d", attr_type_);
       return false;
